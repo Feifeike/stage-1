@@ -4,14 +4,26 @@ import argparse
 import json
 import sys
 from collections import defaultdict
+from contextlib import nullcontext
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import torch
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data.distributed import DistributedSampler
 
 from stage1.utils.config import load_config
 from stage1.utils.checkpointing import checkpoint_path_with_progress, update_checkpoint_alias
+from stage1.utils.distributed import (
+    DistributedContext,
+    all_ranks_have_batch,
+    all_ranks_are_true,
+    average_scalar_metrics,
+    barrier,
+    cleanup_distributed,
+    initialize_distributed,
+)
 from stage1.data.dataset_adapter import (
     SafeStage1Dataset,
     Stage1Dataset,
@@ -46,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stage", choices=("coarse", "refine", "joint"), default=None)
     parser.add_argument("--output_dir", type=Path, default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--local-rank", "--local_rank", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--max_steps", type=int, default=None)
     parser.add_argument("--overfit_batches", type=int, default=None)
     parser.add_argument("--skip_validation", action="store_true")
@@ -326,6 +339,15 @@ def _run_validation(
 
 def main() -> None:
     args = parse_args()
+    distributed = initialize_distributed(args.device, args.local_rank)
+    args.device = str(distributed.device)
+    try:
+        _run_training(args, distributed)
+    finally:
+        cleanup_distributed(distributed)
+
+
+def _run_training(args: argparse.Namespace, distributed: DistributedContext) -> None:
     if args.checkpoint is not None and args.init_checkpoint is not None:
         raise ValueError("--checkpoint resumes full training state; use either --checkpoint or --init_checkpoint, not both.")
     config = load_config(args.config)
@@ -333,16 +355,22 @@ def main() -> None:
         config.setdefault("training", {})["stage"] = args.stage
     output_dir = args.output_dir or Path(config["training"].get("output_dir", "outputs/stage1"))
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    metrics_path = _metrics_path(output_dir)
+    if distributed.is_main:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        metrics_path = _metrics_path(output_dir)
+    else:
+        metrics_path = output_dir / "metrics.jsonl"
     legacy_metrics_schema = metrics_path.name != "metrics.jsonl"
     vis_dir = output_dir / "vis"
     val_vis_dir = output_dir / "val_vis"
     ckpt_dir = output_dir / "checkpoints"
     tensorboard_dir = output_dir / ("tensorboard_v2" if legacy_metrics_schema else "tensorboard")
-    tensorboard_dir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_dir=str(tensorboard_dir)) if SummaryWriter is not None else _NullSummaryWriter()
-    if legacy_metrics_schema:
+    if distributed.is_main:
+        tensorboard_dir.mkdir(parents=True, exist_ok=True)
+        writer = SummaryWriter(log_dir=str(tensorboard_dir)) if SummaryWriter is not None else _NullSummaryWriter()
+    else:
+        writer = _NullSummaryWriter()
+    if distributed.is_main and legacy_metrics_schema:
         print(
             f"legacy metrics schema detected; writing new records to {metrics_path.name} "
             f"and TensorBoard events to {tensorboard_dir.name}",
@@ -352,11 +380,22 @@ def main() -> None:
     dataset = Stage1Dataset(config["data"]["train_manifest"])
     batch_size = int(config["training"].get("batch_size", 1))
     shuffle = args.overfit_batches is None
+    train_sampler = (
+        DistributedSampler(
+            dataset,
+            num_replicas=distributed.world_size,
+            rank=distributed.rank,
+            shuffle=shuffle,
+        )
+        if distributed.enabled and args.overfit_batches is None
+        else None
+    )
     loader = build_dataloader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle if train_sampler is None else False,
         num_workers=int(config["training"].get("num_workers", 0)),
+        sampler=train_sampler,
     )
     if args.overfit_batches is not None:
         cached = []
@@ -371,7 +410,7 @@ def main() -> None:
     val_dataset = None
     val_loader = None
     val_manifest = config.get("data", {}).get("val_manifest")
-    if val_manifest and not args.skip_validation:
+    if val_manifest and not args.skip_validation and distributed.is_main:
         val_dataset = Stage1Dataset(val_manifest)
         val_loader = build_dataloader(
             val_dataset,
@@ -384,11 +423,12 @@ def main() -> None:
     if args.init_checkpoint is not None:
         payload = torch.load(args.init_checkpoint, map_location=args.device, weights_only=False)
         missing, unexpected = model.load_compatible_checkpoint(payload["model"])
-        print(
-            f"initialized model weights from {args.init_checkpoint} "
-            f"(new candidate-graph keys initialized={len(missing)}, unexpected={len(unexpected)})",
-            flush=True,
-        )
+        if distributed.is_main:
+            print(
+                f"initialized model weights from {args.init_checkpoint} "
+                f"(new candidate-graph keys initialized={len(missing)}, unexpected={len(unexpected)})",
+                flush=True,
+            )
     stage = str(config.get("training", {}).get("stage", "joint"))
     params = _configure_training_stage(model, stage)
     if not params:
@@ -417,10 +457,11 @@ def main() -> None:
                 raise
             # A pre-graph optimizer has fewer parameters. Its model weights are
             # usable, but its optimizer state cannot be mapped safely.
-            print(
-                "checkpoint predates candidate graph parameters; resumed model weights with a fresh optimizer",
-                flush=True,
-            )
+            if distributed.is_main:
+                print(
+                    "checkpoint predates candidate graph parameters; resumed model weights with a fresh optimizer",
+                    flush=True,
+                )
             payload["epoch"] = 0
             payload["step"] = 0
             payload["completed_epoch"] = True
@@ -437,6 +478,17 @@ def main() -> None:
     else:
         best_val_loss = float("inf")
         best_val_metric = float("inf")
+
+    train_model = (
+        DistributedDataParallel(
+            model,
+            device_ids=[distributed.local_rank] if distributed.device.type == "cuda" else None,
+            output_device=distributed.local_rank if distributed.device.type == "cuda" else None,
+            find_unused_parameters=True,
+        )
+        if distributed.enabled
+        else model
+    )
 
     epochs = int(config["training"].get("epochs", 1))
     log_interval = int(config["training"].get("log_interval", 10))
@@ -469,23 +521,33 @@ def main() -> None:
     stop = False
     latest_checkpoint_completed = False
     try:
-        with metrics_path.open("a", encoding="utf-8") as metric_handle:
+        metric_context = metrics_path.open("a", encoding="utf-8") if distributed.is_main else nullcontext(None)
+        with metric_context as metric_handle:
             for epoch in range(start_epoch, epochs + 1):
-                progress = tqdm(total=len(loader_iterable), desc=f"epoch {epoch}/{epochs}") if tqdm is not None else None
+                if train_sampler is not None:
+                    train_sampler.set_epoch(epoch)
+                progress = (
+                    tqdm(total=len(loader_iterable), desc=f"epoch {epoch}/{epochs}")
+                    if tqdm is not None and distributed.is_main
+                    else None
+                )
                 running: dict[str, float] = defaultdict(float)
                 count = 0
                 for batch_payload, load_errors in loader_iterable:
-                    if batch_payload is None:
+                    if not all_ranks_have_batch(batch_payload is not None, distributed):
                         if progress is not None:
                             progress.update(1)
                         continue
                     batch = move_batch_to_device(batch_payload, args.device)
                     optimizer.zero_grad(set_to_none=True)
                     with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-                        output = model(batch)
+                        output = train_model(batch)
                         losses = compute_losses(output, config)
-                    if not torch.isfinite(losses.total):
-                        raise FloatingPointError(f"Non-finite loss at step {global_step}: {losses.total.item()}")
+                    if not all_ranks_are_true(bool(torch.isfinite(losses.total).item()), distributed):
+                        raise FloatingPointError(
+                            "Non-finite loss on at least one worker at "
+                            f"step {global_step}; this worker loss={losses.total.item()}"
+                        )
                     scaler.scale(losses.total).backward()
                     if float(config["training"].get("grad_clip_norm", 0.0)) > 0:
                         scaler.unscale_(optimizer)
@@ -495,15 +557,20 @@ def main() -> None:
 
                     global_step += 1
                     count += 1
-                    record = {name: _metric_to_float(value) for name, value in losses.metrics.items()}
-                    record.update({"epoch": epoch, "step": global_step, "sample_ids": batch.sample_ids})
-                    metric_handle.write(json.dumps(record, ensure_ascii=True) + "\n")
-                    metric_handle.flush()
+                    record = average_scalar_metrics(losses.metrics, distributed)
+                    record.update({
+                        "epoch": epoch,
+                        "step": global_step,
+                        "sample_ids": batch.sample_ids if distributed.is_main else [],
+                    })
+                    if distributed.is_main:
+                        metric_handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+                        metric_handle.flush()
                     for key, value in record.items():
-                        if isinstance(value, float):
+                        if isinstance(value, float) and distributed.is_main:
                             running[key] += value
                             writer.add_scalar(_tensorboard_scalar_tag(key), value, global_step)
-                    if global_step % log_interval == 0:
+                    if global_step % log_interval == 0 and distributed.is_main:
                         head_loss_key = "loss_matchability" if stage == "coarse" else "loss_certainty"
                         msg = {
                             k: running[k] / max(count, 1)
@@ -527,7 +594,7 @@ def main() -> None:
                                 top1=f"{msg.get('coarse_top1_accuracy', 0.0):.4f}",
                                 refine_px=f"{msg.get('refine_pixel_error', 0.0):.4f}",
                             )
-                        else:
+                        elif distributed.is_main:
                             print(f"step={global_step} " + " ".join(f"{k}={v:.4f}" for k, v in msg.items()), flush=True)
                     if progress is not None:
                         progress.update(1)
@@ -537,109 +604,112 @@ def main() -> None:
                 if progress is not None:
                     progress.close()
                 epoch_completed = not stop
-                if visualization_enabled:
-                    _save_fixed_visualizations(
-                        model,
-                        dataset,
-                        train_visualization_samples,
-                        config,
-                        args.device,
-                        use_amp,
-                        vis_dir,
-                        epoch,
-                    )
-                latest_checkpoint_completed = epoch_completed
-                _save_versioned_checkpoint(
-                    latest_checkpoint_path,
-                    model,
-                    optimizer,
-                    scaler,
-                    epoch,
-                    global_step,
-                    config,
-                    keep_previous_versions=False,
-                    completed_epoch=epoch_completed,
-                    best_val_loss=best_val_loss if best_val_loss != float("inf") else None,
-                    best_val_metric=best_val_metric if best_val_metric != float("inf") else None,
-                )
-                if val_loader is not None and global_step > 0:
-                    val_metrics = _run_validation(
-                        model,
-                        val_loader,
-                        config,
-                        args.device,
-                        use_amp,
-                        max_batches=args.max_val_batches,
-                    )
-                    if visualization_enabled and val_dataset is not None:
+                barrier(distributed)
+                if distributed.is_main:
+                    if visualization_enabled:
                         _save_fixed_visualizations(
                             model,
-                            val_dataset,
-                            val_visualization_samples,
+                            dataset,
+                            train_visualization_samples,
                             config,
                             args.device,
                             use_amp,
-                            val_vis_dir,
+                            vis_dir,
                             epoch,
                         )
-                    val_loss = val_metrics.get("loss_total")
-                    val_metric = val_metrics.get("mean_metric_error")
-                    for key, value in val_metrics.items():
-                        writer.add_scalar(f"val/{_tensorboard_scalar_tag(key)}", value, global_step)
-
-                    best_checkpoint_updated = False
-                    if val_loss is not None and val_loss < best_val_loss:
-                        best_val_loss = val_loss
-                        _save_versioned_checkpoint(
-                            best_loss_checkpoint_template_path,
+                    latest_checkpoint_completed = epoch_completed
+                    _save_versioned_checkpoint(
+                        latest_checkpoint_path,
+                        model,
+                        optimizer,
+                        scaler,
+                        epoch,
+                        global_step,
+                        config,
+                        keep_previous_versions=False,
+                        completed_epoch=epoch_completed,
+                        best_val_loss=best_val_loss if best_val_loss != float("inf") else None,
+                        best_val_metric=best_val_metric if best_val_metric != float("inf") else None,
+                    )
+                    if val_loader is not None and global_step > 0:
+                        val_metrics = _run_validation(
                             model,
-                            optimizer,
-                            scaler,
-                            epoch,
-                            global_step,
+                            val_loader,
                             config,
-                            keep_previous_versions=True,
-                            completed_epoch=epoch_completed,
-                            best_val_loss=best_val_loss,
-                            best_val_metric=best_val_metric if best_val_metric != float("inf") else None,
+                            args.device,
+                            use_amp,
+                            max_batches=args.max_val_batches,
                         )
-                        best_checkpoint_updated = True
+                        if visualization_enabled and val_dataset is not None:
+                            _save_fixed_visualizations(
+                                model,
+                                val_dataset,
+                                val_visualization_samples,
+                                config,
+                                args.device,
+                                use_amp,
+                                val_vis_dir,
+                                epoch,
+                            )
+                        val_loss = val_metrics.get("loss_total")
+                        val_metric = val_metrics.get("mean_metric_error")
+                        for key, value in val_metrics.items():
+                            writer.add_scalar(f"val/{_tensorboard_scalar_tag(key)}", value, global_step)
 
-                    if val_metric is not None and val_metric < best_val_metric:
-                        best_val_metric = val_metric
-                        _save_versioned_checkpoint(
-                            best_metric_checkpoint_template_path,
-                            model,
-                            optimizer,
-                            scaler,
-                            epoch,
-                            global_step,
-                            config,
-                            keep_previous_versions=True,
-                            completed_epoch=epoch_completed,
-                            best_val_loss=best_val_loss if best_val_loss != float("inf") else None,
-                            best_val_metric=best_val_metric,
-                        )
-                        best_checkpoint_updated = True
+                        best_checkpoint_updated = False
+                        if val_loss is not None and val_loss < best_val_loss:
+                            best_val_loss = val_loss
+                            _save_versioned_checkpoint(
+                                best_loss_checkpoint_template_path,
+                                model,
+                                optimizer,
+                                scaler,
+                                epoch,
+                                global_step,
+                                config,
+                                keep_previous_versions=True,
+                                completed_epoch=epoch_completed,
+                                best_val_loss=best_val_loss,
+                                best_val_metric=best_val_metric if best_val_metric != float("inf") else None,
+                            )
+                            best_checkpoint_updated = True
 
-                    if best_checkpoint_updated:
-                        _save_versioned_checkpoint(
-                            latest_checkpoint_path,
-                            model,
-                            optimizer,
-                            scaler,
-                            epoch,
-                            global_step,
-                            config,
-                            keep_previous_versions=False,
-                            completed_epoch=epoch_completed,
-                            best_val_loss=best_val_loss,
-                            best_val_metric=best_val_metric,
-                        )
+                        if val_metric is not None and val_metric < best_val_metric:
+                            best_val_metric = val_metric
+                            _save_versioned_checkpoint(
+                                best_metric_checkpoint_template_path,
+                                model,
+                                optimizer,
+                                scaler,
+                                epoch,
+                                global_step,
+                                config,
+                                keep_previous_versions=True,
+                                completed_epoch=epoch_completed,
+                                best_val_loss=best_val_loss if best_val_loss != float("inf") else None,
+                                best_val_metric=best_val_metric,
+                            )
+                            best_checkpoint_updated = True
+
+                        if best_checkpoint_updated:
+                            _save_versioned_checkpoint(
+                                latest_checkpoint_path,
+                                model,
+                                optimizer,
+                                scaler,
+                                epoch,
+                                global_step,
+                                config,
+                                keep_previous_versions=False,
+                                completed_epoch=epoch_completed,
+                                best_val_loss=best_val_loss,
+                                best_val_metric=best_val_metric,
+                            )
+                barrier(distributed)
                 if stop:
                     break
     finally:
-        if global_step > 0 and not latest_checkpoint_completed:
+        if distributed.is_main and global_step > 0 and not latest_checkpoint_completed:
             _save_versioned_checkpoint(
                 latest_checkpoint_path,
                 model,

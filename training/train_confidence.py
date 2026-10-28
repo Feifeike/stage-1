@@ -4,11 +4,14 @@ import argparse
 import json
 import sys
 from collections import defaultdict
+from contextlib import nullcontext
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import torch
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data.distributed import DistributedSampler
 
 from stage1.utils.config import load_config
 from stage1.utils.checkpointing import (
@@ -18,6 +21,15 @@ from stage1.utils.checkpointing import (
 )
 from stage1.models.confidence import Stage1ConfidenceModel, compute_confidence_loss
 from stage1.data.dataset_adapter import Stage1Dataset, build_dataloader, move_batch_to_device
+from stage1.utils.distributed import (
+    DistributedContext,
+    all_ranks_have_batch,
+    all_ranks_are_true,
+    average_scalar_metrics,
+    barrier,
+    cleanup_distributed,
+    initialize_distributed,
+)
 
 try:
     from tqdm.auto import tqdm
@@ -55,6 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, default=None, help="Override the training manifest.")
     parser.add_argument("--val_manifest", type=Path, default=None, help="Override the validation manifest.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--local-rank", "--local_rank", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--max_steps", type=int, default=None)
     parser.add_argument("--overfit_batches", type=int, default=None)
     parser.add_argument("--skip_validation", action="store_true")
@@ -72,15 +85,22 @@ def _ema(previous: float | None, current: float, alpha: float) -> float:
     return current if previous is None else alpha * previous + (1.0 - alpha) * current
 
 
-def _load_base_checkpoint(model: Stage1ConfidenceModel, path: Path, device: str) -> None:
+def _load_base_checkpoint(
+    model: Stage1ConfidenceModel,
+    path: Path,
+    device: str,
+    *,
+    verbose: bool = True,
+) -> None:
     payload = torch.load(path, map_location=device, weights_only=False)
     state = payload.get("model", payload)
     missing, unexpected = model.stage1.load_compatible_checkpoint(state)
-    print(
-        f"initialized frozen coarse+refine model from {path} "
-        f"(missing={len(missing)}, unexpected={len(unexpected)})",
-        flush=True,
-    )
+    if verbose:
+        print(
+            f"initialized frozen coarse+refine model from {path} "
+            f"(missing={len(missing)}, unexpected={len(unexpected)})",
+            flush=True,
+        )
     model.stage1.eval()
     model.stage1.requires_grad_(False)
 
@@ -92,15 +112,18 @@ def _load_confidence_checkpoint(
     path: Path,
     device: str,
     base_checkpoint_sha256: str,
+    *,
+    verbose: bool = True,
 ) -> tuple[int, int, float]:
     payload = torch.load(path, map_location=device, weights_only=False)
     saved_base_hash = payload.get("base_checkpoint_sha256")
     if saved_base_hash is None:
-        print(
-            "warning: resumed confidence checkpoint has no base checkpoint hash; "
-            "the Stage-1 pairing cannot be verified",
-            flush=True,
-        )
+        if verbose:
+            print(
+                "warning: resumed confidence checkpoint has no base checkpoint hash; "
+                "the Stage-1 pairing cannot be verified",
+                flush=True,
+            )
     elif saved_base_hash != base_checkpoint_sha256:
         raise ValueError(
             "The confidence checkpoint was trained with a different Stage-1 base checkpoint: "
@@ -210,10 +233,20 @@ def _run_validation(model, loader, config: dict, device: str, use_amp: bool, max
 
 def main() -> None:
     args = parse_args()
+    distributed = initialize_distributed(args.device, args.local_rank)
+    args.device = str(distributed.device)
+    try:
+        _run_training(args, distributed)
+    finally:
+        cleanup_distributed(distributed)
+
+
+def _run_training(args: argparse.Namespace, distributed: DistributedContext) -> None:
     config = load_config(args.config)
     training_cfg = config.setdefault("training", {})
     output_dir = Path(args.output_dir or training_cfg.get("output_dir", "outputs/stage1_confidence"))
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if distributed.is_main:
+        output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir = output_dir / "checkpoints"
     latest_checkpoint_template = checkpoint_dir / str(
         training_cfg.get("checkpoint_name", "confidence_latest.pth")
@@ -223,17 +256,32 @@ def main() -> None:
     )
     metrics_path = output_dir / "metrics.jsonl"
     tensorboard_dir = output_dir / "tensorboard"
-    writer = SummaryWriter(log_dir=str(tensorboard_dir)) if SummaryWriter is not None else _NullSummaryWriter()
+    if distributed.is_main:
+        writer = SummaryWriter(log_dir=str(tensorboard_dir)) if SummaryWriter is not None else _NullSummaryWriter()
+    else:
+        writer = _NullSummaryWriter()
 
     train_manifest = args.manifest or config["data"].get("train_manifest")
     if not train_manifest:
         raise ValueError("A confidence training manifest with monocular depth is required.")
     dataset = Stage1Dataset(train_manifest)
+    shuffle = args.overfit_batches is None
+    train_sampler = (
+        DistributedSampler(
+            dataset,
+            num_replicas=distributed.world_size,
+            rank=distributed.rank,
+            shuffle=shuffle,
+        )
+        if distributed.enabled and args.overfit_batches is None
+        else None
+    )
     loader = build_dataloader(
         dataset,
         batch_size=int(training_cfg.get("batch_size", 1)),
-        shuffle=args.overfit_batches is None,
+        shuffle=shuffle if train_sampler is None else False,
         num_workers=int(training_cfg.get("num_workers", 0)),
+        sampler=train_sampler,
     )
     if args.overfit_batches is not None:
         cached_batches = []
@@ -247,7 +295,8 @@ def main() -> None:
 
     val_loader = None
     val_manifest = args.val_manifest or config.get("data", {}).get("val_manifest")
-    if val_manifest and not args.skip_validation:
+    val_dataset = None
+    if val_manifest and not args.skip_validation and distributed.is_main:
         val_dataset = Stage1Dataset(val_manifest)
         val_loader = build_dataloader(
             val_dataset,
@@ -258,7 +307,7 @@ def main() -> None:
 
     model = Stage1ConfidenceModel(config).to(args.device)
     base_checkpoint_sha256 = sha256_file(args.base_checkpoint)
-    _load_base_checkpoint(model, args.base_checkpoint, args.device)
+    _load_base_checkpoint(model, args.base_checkpoint, args.device, verbose=distributed.is_main)
     optimizer = torch.optim.AdamW(
         model.confidence_head.parameters(),
         lr=float(training_cfg.get("learning_rate", 1e-4)),
@@ -280,9 +329,21 @@ def main() -> None:
             args.checkpoint,
             args.device,
             base_checkpoint_sha256,
+            verbose=distributed.is_main,
         )
         start_epoch = restored_epoch + 1
         global_step = restored_step
+
+    train_model = (
+        DistributedDataParallel(
+            model,
+            device_ids=[distributed.local_rank] if distributed.device.type == "cuda" else None,
+            output_device=distributed.local_rank if distributed.device.type == "cuda" else None,
+            find_unused_parameters=True,
+        )
+        if distributed.enabled
+        else model
+    )
 
     model.train()
     epochs = int(training_cfg.get("epochs", 1))
@@ -291,23 +352,33 @@ def main() -> None:
     stop = False
     tensorboard_loss_ema: float | None = None
     try:
-        with metrics_path.open("a", encoding="utf-8") as metric_handle:
+        metric_context = metrics_path.open("a", encoding="utf-8") if distributed.is_main else nullcontext(None)
+        with metric_context as metric_handle:
             for epoch in range(start_epoch, epochs + 1):
-                progress = tqdm(total=len(loader_iterable), desc=f"confidence epoch {epoch}/{epochs}") if tqdm else None
+                if train_sampler is not None:
+                    train_sampler.set_epoch(epoch)
+                progress = (
+                    tqdm(total=len(loader_iterable), desc=f"confidence epoch {epoch}/{epochs}")
+                    if tqdm and distributed.is_main
+                    else None
+                )
                 running: dict[str, float] = defaultdict(float)
                 batch_count = 0
                 for batch_payload, _load_errors in loader_iterable:
-                    if batch_payload is None:
+                    if not all_ranks_have_batch(batch_payload is not None, distributed):
                         if progress:
                             progress.update(1)
                         continue
                     batch = move_batch_to_device(batch_payload, args.device)
                     optimizer.zero_grad(set_to_none=True)
                     with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-                        output = model(batch)
+                        output = train_model(batch)
                         loss_output = compute_confidence_loss(output, batch, config)
-                    if not torch.isfinite(loss_output.loss):
-                        raise FloatingPointError(f"Non-finite confidence loss at step {global_step}: {loss_output.loss.item()}")
+                    if not all_ranks_are_true(bool(torch.isfinite(loss_output.loss).item()), distributed):
+                        raise FloatingPointError(
+                            "Non-finite confidence loss on at least one worker at "
+                            f"step {global_step}; this worker loss={loss_output.loss.item()}"
+                        )
                     scaler.scale(loss_output.loss).backward()
                     grad_clip_norm = float(training_cfg.get("grad_clip_norm", 0.0))
                     if grad_clip_norm > 0:
@@ -317,25 +388,31 @@ def main() -> None:
                     scaler.update()
                     global_step += 1
                     batch_count += 1
-                    record = {key: _metric_to_float(value) for key, value in loss_output.metrics.items()}
-                    record.update({"epoch": epoch, "step": global_step, "sample_ids": batch.sample_ids})
-                    metric_handle.write(json.dumps(record) + "\n")
-                    metric_handle.flush()
+                    record = average_scalar_metrics(loss_output.metrics, distributed)
+                    record.update({
+                        "epoch": epoch,
+                        "step": global_step,
+                        "sample_ids": batch.sample_ids if distributed.is_main else [],
+                    })
+                    if distributed.is_main:
+                        metric_handle.write(json.dumps(record) + "\n")
+                        metric_handle.flush()
                     for key, value in record.items():
-                        if isinstance(value, float):
+                        if isinstance(value, float) and distributed.is_main:
                             running[key] += value
-                    tensorboard_loss_ema = _ema(
-                        tensorboard_loss_ema,
-                        record["loss_confidence"],
-                        tensorboard_loss_ema_alpha,
-                    )
-                    writer.add_scalar("loss/confidence", tensorboard_loss_ema, global_step)
-                    writer.add_scalar(
-                        "scale/confidence_scale",
-                        record["confidence_scale_mean"],
-                        global_step,
-                    )
-                    writer.add_scalar("scale/equal_scale", record["equal_scale_mean"], global_step)
+                    if distributed.is_main:
+                        tensorboard_loss_ema = _ema(
+                            tensorboard_loss_ema,
+                            record["loss_confidence"],
+                            tensorboard_loss_ema_alpha,
+                        )
+                        writer.add_scalar("loss/confidence", tensorboard_loss_ema, global_step)
+                        writer.add_scalar(
+                            "scale/confidence_scale",
+                            record["confidence_scale_mean"],
+                            global_step,
+                        )
+                        writer.add_scalar("scale/equal_scale", record["equal_scale_mean"], global_step)
                     if progress:
                         progress.update(1)
                         if global_step % log_interval == 0:
@@ -349,52 +426,55 @@ def main() -> None:
                 if progress:
                     progress.close()
 
-                val_metrics = _run_validation(
-                    model,
-                    val_loader,
-                    config,
-                    args.device,
-                    use_amp,
-                    args.max_val_batches,
-                ) if val_loader is not None else {}
-                if val_metrics:
-                    val_record = {f"val_{key}": value for key, value in val_metrics.items()}
-                    val_record.update({"epoch": epoch, "step": global_step})
-                    metric_handle.write(json.dumps(val_record) + "\n")
-                    metric_handle.flush()
-                    writer.add_scalar(
-                        "loss/val_confidence",
-                        val_metrics["loss_confidence"],
-                        global_step,
-                    )
-                    if val_metrics.get("loss_confidence", float("inf")) < best_val_loss:
-                        best_val_loss = val_metrics["loss_confidence"]
-                        _save_versioned_checkpoint(
-                            best_checkpoint_template,
-                            model,
-                            optimizer,
-                            scaler,
-                            epoch,
+                barrier(distributed)
+                if distributed.is_main:
+                    val_metrics = _run_validation(
+                        model,
+                        val_loader,
+                        config,
+                        args.device,
+                        use_amp,
+                        args.max_val_batches,
+                    ) if val_loader is not None else {}
+                    if val_metrics:
+                        val_record = {f"val_{key}": value for key, value in val_metrics.items()}
+                        val_record.update({"epoch": epoch, "step": global_step})
+                        metric_handle.write(json.dumps(val_record) + "\n")
+                        metric_handle.flush()
+                        writer.add_scalar(
+                            "loss/val_confidence",
+                            val_metrics["loss_confidence"],
                             global_step,
-                            config,
-                            args.base_checkpoint,
-                            base_checkpoint_sha256,
-                            best_val_loss,
-                            keep_previous_versions=True,
                         )
-                _save_versioned_checkpoint(
-                    latest_checkpoint_template,
-                    model,
-                    optimizer,
-                    scaler,
-                    epoch,
-                    global_step,
-                    config,
-                    args.base_checkpoint,
-                    base_checkpoint_sha256,
-                    best_val_loss,
-                    keep_previous_versions=False,
-                )
+                        if val_metrics.get("loss_confidence", float("inf")) < best_val_loss:
+                            best_val_loss = val_metrics["loss_confidence"]
+                            _save_versioned_checkpoint(
+                                best_checkpoint_template,
+                                model,
+                                optimizer,
+                                scaler,
+                                epoch,
+                                global_step,
+                                config,
+                                args.base_checkpoint,
+                                base_checkpoint_sha256,
+                                best_val_loss,
+                                keep_previous_versions=True,
+                            )
+                    _save_versioned_checkpoint(
+                        latest_checkpoint_template,
+                        model,
+                        optimizer,
+                        scaler,
+                        epoch,
+                        global_step,
+                        config,
+                        args.base_checkpoint,
+                        base_checkpoint_sha256,
+                        best_val_loss,
+                        keep_previous_versions=False,
+                    )
+                barrier(distributed)
                 if stop:
                     break
     finally:

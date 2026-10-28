@@ -1,5 +1,28 @@
 # Stage-1 Front-to-Satellite Correspondence
 
+## 多卡分布式训练
+
+主匹配模型使用 4 张 GPU 时，从 `/mnt/mydisk/fkx/DC` 启动：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nnodes=1 --nproc_per_node=4 \
+  -m models.stage1.training.train \
+  --config models/stage1/configs/config_graph_full.yaml \
+  --output_dir models/stage1/outputs/stage1_ddp
+```
+
+`config_graph_full.yaml` 中的 `training.batch_size` 是**每张 GPU 的 batch size**，所以全局 batch size 等于该值乘以 GPU 数量。验证、TensorBoard、metrics、可视化和 checkpoint 只由 rank 0 写入。启动续训时所有 rank 使用同一个 `--checkpoint` 路径。
+
+confidence head 训练也支持相同的 DDP 启动方式：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nnodes=1 --nproc_per_node=4 \
+  -m models.stage1.training.train_confidence \
+  --config models/stage1/configs/config_confidence.yaml \
+  --base_checkpoint models/stage1/outputs/stage1_refine/checkpoints/stage1_latest.pth \
+  --output_dir models/stage1/outputs/stage1_confidence_ddp
+```
+
 ## Train
 From `/mnt/mydisk/fkx/DC`:
 

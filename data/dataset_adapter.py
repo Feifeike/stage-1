@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 
 
 @dataclass(frozen=True)
@@ -391,13 +391,15 @@ def build_dataloader(
     batch_size: int,
     shuffle: bool = False,
     num_workers: int = 0,
+    sampler: Sampler | None = None,
 ) -> DataLoader:
     return DataLoader(
         SafeStage1Dataset(dataset),
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle if sampler is None else False,
         num_workers=num_workers,
         collate_fn=projection_collate,
+        sampler=sampler,
     )
 
 
