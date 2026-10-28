@@ -1,0 +1,110 @@
+data:
+  train_manifest: /mnt/mydisk/fkx/DC/models/stage1_anchor/outputs/260703/kitti360_train_0000_manifest.json
+  val_manifest: null
+
+model:
+  descriptor_dim: 64
+  backbone_type: conv
+  shared_backbone: true
+  conv_stride: 16
+  backbone_name: dinov3_vits16
+  output_type: dense-cls
+  per_view_adapter: true
+  freeze_backbone: true
+  dinov3_repo_path: /mnt/mydisk/toolNet/DINOv3/dinov3
+  dinov3_weights_path: /mnt/mydisk/toolNet/DINOv3/dino_encoder/weights/dinov3_vits16_pretrain_lvd1689m-08c60483.pth
+
+geometry:
+  depth_type: camera_z
+  lidar_query_radius_px: 4
+  sanity_query_stride: 16
+
+matcher:
+  temperature: 0.07
+  num_layers: 1
+  num_heads: 4
+  candidate_graph:
+    enabled: true
+    candidate_count: 3
+    candidate_min_separation_px: 16.0
+    hidden_dim: 32
+    num_layers: 1
+    dropout: 0.0
+    include_diagonal_neighbors: true
+    cross_region_links: true
+    rotation_ransac_threshold_rad: 0.5
+    rotation_ransac_hypotheses: 16
+    use_geometry: true
+    depth_source: mono
+    depth_type: camera_z
+    depth_units: arbitrary
+    depth_valid_weight_threshold: 0.5
+    min_depth_confidence: 0.0
+    vehicle_horizontal_axes: [1, 0]
+    satellite_orientation_default: north_up
+    depth_relation: metric_or_global_scale
+    depth_scale_mode: robust
+    max_logit_residual: 3.0
+
+matching:
+  score_mode: forward_softmax
+
+refiner:
+  radius: 1
+  hidden_dim: null
+  max_offset_px: 16.0
+  scales: [16, 8, 4, 2, 1]
+  fine_feature_dim: 32
+  fine_pretrained: false
+  hidden_blocks: 2
+  depthwise: true
+  displacement_emb_dims:
+    16: 32
+    8: 16
+    4: 8
+    2: 4
+    1: 2
+  local_corr_radii:
+    16: 2
+    8: 1
+    4: 1
+    2: null
+    1: null
+
+loss:
+  lambda_coarse: 1.0
+  lambda_refine: 1.0
+  lambda_matchability: 0.1
+  lambda_certainty: 0.1
+  coarse_max_gt_grid_dist_px: 32.0
+  lambda_graph_candidate: 0.25
+  lambda_graph_structure: 0.05
+  lambda_refine_structure: 0.05
+  graph_structure_min_baseline_m: 1.0
+  graph_structure_huber_beta_m: 1.0
+  refine_structure_min_baseline_m: 1.0
+  refine_structure_huber_beta_m: 1.0
+
+training:
+  stage: joint
+  output_dir: /tmp/stage1_smoke
+  batch_size: 1
+  num_workers: 0
+  epochs: 5
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
+  amp: false
+  grad_clip_norm: 1.0
+  log_interval: 1
+  checkpoint_name: stage1_latest.pth
+  best_loss_checkpoint_name: stage1_best_loss.pth
+  best_metric_checkpoint_name: stage1_best_metric.pth
+
+evaluation:
+  batch_size: 1
+  num_workers: 0
+
+visualization:
+  enabled: true
+  frames_per_scene: 3
+  max_points: 40

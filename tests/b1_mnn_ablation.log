@@ -1,0 +1,574 @@
+processed batch 1/50 (8 samples, 42.1s)
+processed batch 2/50 (8 samples, 84.8s)
+processed batch 3/50 (8 samples, 127.5s)
+processed batch 4/50 (8 samples, 169.7s)
+processed batch 5/50 (8 samples, 212.1s)
+processed batch 6/50 (8 samples, 254.6s)
+processed batch 7/50 (8 samples, 297.2s)
+processed batch 8/50 (8 samples, 339.7s)
+processed batch 9/50 (8 samples, 382.3s)
+processed batch 10/50 (8 samples, 425.0s)
+processed batch 11/50 (8 samples, 467.5s)
+processed batch 12/50 (8 samples, 510.3s)
+processed batch 13/50 (8 samples, 552.8s)
+processed batch 14/50 (8 samples, 596.0s)
+processed batch 15/50 (8 samples, 638.8s)
+processed batch 16/50 (8 samples, 681.2s)
+processed batch 17/50 (8 samples, 723.8s)
+processed batch 18/50 (8 samples, 766.5s)
+processed batch 19/50 (8 samples, 809.4s)
+processed batch 20/50 (8 samples, 852.3s)
+processed batch 21/50 (8 samples, 894.9s)
+processed batch 22/50 (8 samples, 937.7s)
+processed batch 23/50 (8 samples, 980.3s)
+processed batch 24/50 (8 samples, 1023.3s)
+processed batch 25/50 (8 samples, 1065.9s)
+processed batch 26/50 (8 samples, 1108.7s)
+processed batch 27/50 (8 samples, 1151.1s)
+processed batch 28/50 (8 samples, 1193.6s)
+processed batch 29/50 (8 samples, 1236.5s)
+processed batch 30/50 (8 samples, 1279.3s)
+processed batch 31/50 (8 samples, 1322.1s)
+processed batch 32/50 (8 samples, 1364.7s)
+processed batch 33/50 (8 samples, 1407.5s)
+processed batch 34/50 (8 samples, 1450.3s)
+processed batch 35/50 (8 samples, 1493.2s)
+processed batch 36/50 (8 samples, 1535.9s)
+processed batch 37/50 (8 samples, 1578.5s)
+processed batch 38/50 (8 samples, 1621.1s)
+processed batch 39/50 (8 samples, 1664.1s)
+processed batch 40/50 (8 samples, 1707.1s)
+processed batch 41/50 (8 samples, 1749.8s)
+processed batch 42/50 (8 samples, 1792.4s)
+processed batch 43/50 (8 samples, 1835.4s)
+processed batch 44/50 (8 samples, 1877.9s)
+processed batch 45/50 (8 samples, 1920.6s)
+processed batch 46/50 (8 samples, 1963.3s)
+processed batch 47/50 (8 samples, 2005.9s)
+processed batch 48/50 (8 samples, 2048.9s)
+processed batch 49/50 (8 samples, 2091.4s)
+processed batch 50/50 (8 samples, 2134.1s)
+{
+  "experiment": "B1 forward, dual-softmax and MNN inference ablation",
+  "comparison": "All modes are computed from the same checkpoint, batches, preprocessing, and temperature-scaled logits.",
+  "score_definitions": {
+    "forward_softmax": "softmax(L, dim=-1)",
+    "dual_softmax": "exp(log_softmax(float32(L), dim=-1) + log_softmax(float32(L), dim=-2))",
+    "mnn": "accept the row-argmax pair only when the selected satellite's column-argmax is the same front query; no dustbin",
+    "mnn_retention_score": "forward-softmax probability of the accepted mutual pair; retention is ranked within accepted MNN pairs",
+    "mnn_unmatched": "non-mutual queries receive index -1 and no coarse/refined match; counted as unmatched and as incorrect in all-query Top-1",
+    "temperature": "L is already temperature/logit-scale adjusted; no extra scaling is applied.",
+    "dual_score_calibration": "raw dual score, not a calibrated match-correctness probability.",
+    "invalid_positions": "masked from both normalizations; reverse normalization uses every valid front query in each sample.",
+    "training": "original row-wise cross entropy on unchanged logits; no reverse loss."
+  },
+  "provenance": {
+    "config": "configs/config_confidence.yaml",
+    "checkpoint": "outputs_0923/stage1_refine/checkpoints/stage1_latest.pth",
+    "checkpoint_sha256": "171c2636c931be1c8d025439624fa877267f0d501dcb46d345232dc4cd96793d",
+    "manifest": "outputs_0923/stage1_refine/kitti360_val400_manifest.json",
+    "device": "cpu",
+    "batch_size": 8,
+    "batches_processed": 50,
+    "samples_evaluated": 400,
+    "samples_requested": 400,
+    "load_errors": [],
+    "checkpoint_epoch": 91,
+    "checkpoint_step": 613795,
+    "confidence_checkpoint": "outputs_1021/stage1_confidence/checkpoints/confidence_best.pth",
+    "confidence_checkpoint_sha256": "495685abf2e17cc74cb10fc058619ea12b2df49d2fdc68d51cfb0d6eb65f5f66",
+    "confidence_epoch": 6,
+    "confidence_step": 40470,
+    "confidence_recorded_base_checkpoint": "models/stage1/outputs_0923/stage1_refine/checkpoints/stage1_latest.pth",
+    "confidence_recorded_base_sha256": null,
+    "confidence_pairing_evidence": "stored base path; legacy checkpoint has no historical hash",
+    "effective_config": {
+      "data": {
+        "train_manifest": "/mnt/mydisk/data/public_data/DC/KITTI-360/stage1_train_manifest.json",
+        "val_manifest": "/mnt/mydisk/fkx/DC/models/stage1/outputs_0923/stage1_refine/kitti360_val400_manifest.json"
+      },
+      "model": {
+        "descriptor_dim": 128,
+        "backbone_type": "dinov3",
+        "backbone_name": "dinov3_vits16",
+        "output_type": "dense-cls",
+        "shared_backbone": true,
+        "per_view_adapter": true,
+        "freeze_backbone": true,
+        "dinov3_repo_path": "/mnt/mydisk/toolNet/DINOv3/dinov3",
+        "dinov3_weights_path": "/mnt/mydisk/toolNet/DINOv3/dino_encoder/weights/dinov3_vits16_pretrain_lvd1689m-08c60483.pth",
+        "conv_stride": 8
+      },
+      "geometry": {
+        "depth_type": "camera_z",
+        "lidar_query_radius_px": 4,
+        "sanity_query_stride": 16
+      },
+      "matcher": {
+        "temperature": 0.07,
+        "num_layers": 2,
+        "num_heads": 4
+      },
+      "matching": {
+        "score_mode": "forward_softmax"
+      },
+      "refiner": {
+        "radius": 2,
+        "hidden_dim": null,
+        "max_offset_px": 16.0,
+        "scales": [
+          16,
+          8,
+          4,
+          2,
+          1
+        ],
+        "fine_feature_dim": 64,
+        "fine_pretrained": false,
+        "hidden_blocks": 8,
+        "depthwise": true,
+        "displacement_emb_dims": {
+          "16": 128,
+          "8": 64,
+          "4": 32,
+          "2": 16,
+          "1": 6
+        },
+        "local_corr_radii": {
+          "16": 7,
+          "8": 3,
+          "4": 2,
+          "2": null,
+          "1": null
+        }
+      },
+      "loss": {
+        "lambda_coarse": 1.0,
+        "lambda_refine": 1.0,
+        "lambda_matchability": 0.1,
+        "lambda_certainty": 0.1,
+        "coarse_max_gt_grid_dist_px": 24.0
+      },
+      "confidence": {
+        "base_stage": "refine",
+        "mono_depth_type": "camera_z",
+        "max_anchor_depth_m": 80.0,
+        "lidar_min_depth_m": 0.001,
+        "lidar_max_depth_m": 80.0,
+        "depth_epsilon": 1e-06
+      },
+      "training": {
+        "stage": "confidence",
+        "output_dir": "models/stage1/outputs/stage1_confidence",
+        "batch_size": 8,
+        "num_workers": 4,
+        "epochs": 100,
+        "learning_rate": 0.0001,
+        "weight_decay": 0.0001,
+        "amp": true,
+        "grad_clip_norm": 1.0,
+        "log_interval": 10,
+        "tensorboard_loss_ema_alpha": 0.98,
+        "checkpoint_name": "confidence_latest.pth",
+        "best_checkpoint_name": "confidence_best.pth"
+      },
+      "evaluation": {
+        "batch_size": 8,
+        "num_workers": 4
+      }
+    },
+    "query_count": 844800,
+    "inference_valid_queries": 844800,
+    "satellite_candidates": 409600,
+    "valid_gt_queries": 484771,
+    "retention_ratios": [
+      0.25,
+      0.5,
+      0.75
+    ],
+    "exact_grid_eligibility_threshold_px": 24.0,
+    "coarse_geometry_threshold_px": 10.0,
+    "matching_score_mode_for_shared_forward": "forward_softmax"
+  },
+  "geometric_depth_diagnostic": {
+    "metric_role": "geometric_camera_z_matching_diagnostic",
+    "canonical_depth_metric": false,
+    "scale_correction_applied": false,
+    "primary_depth_evaluator": "evaluate_confidence.py",
+    "prediction": "camera-z recovered geometrically from the selected north-up satellite match and camera pose",
+    "ground_truth": "LiDAR camera-z sampled at front query positions",
+    "depth_type": "camera_z",
+    "lidar_query_radius_px": 4,
+    "satellite_meters_per_pixel_min": 0.20000000298023224,
+    "satellite_meters_per_pixel_mean": 0.20000000298023224,
+    "satellite_meters_per_pixel_max": 0.20000000298023224,
+    "metrics": [
+      "AbsRel",
+      "SqRel",
+      "RMSE (m)",
+      "delta1"
+    ]
+  },
+  "depth_evaluation": {
+    "metric_protocol": "confidence_weighted_scale_corrected_dense_depth_v1",
+    "primary_stage": "refined",
+    "stages": [
+      "coarse",
+      "refined"
+    ],
+    "scale_formula": "exp(sum_i normalized_confidence_i * log(anchor_z_i / mono_anchor_z_i))",
+    "weights": "same frozen learned confidence head, sampled at each stage/mode selected location",
+    "anchors": "all inference-valid finite positive anchor camera-z <= max_anchor_depth_m and positive mono camera-z; no GT filtering or certainty/top-k gate",
+    "mask": "same finite positive mono and configured LiDAR-depth mask for A/B; paired valid-scale frames per stage",
+    "aggregation": "mean of per-image metrics",
+    "paired_frame_counts": {
+      "coarse": {
+        "paired_frames": 397,
+        "excluded_frames": 3
+      },
+      "refined": {
+        "paired_frames": 375,
+        "excluded_frames": 25
+      }
+    },
+    "coarse_note": "coarse-stage ablation applies the same head trained on refined anchors at coarse positions",
+    "parameters": {
+      "base_stage": "refine",
+      "mono_depth_type": "camera_z",
+      "max_anchor_depth_m": 80.0,
+      "lidar_min_depth_m": 0.001,
+      "lidar_max_depth_m": 80.0,
+      "depth_epsilon": 1e-06
+    }
+  },
+  "modes": {
+    "forward_softmax": {
+      "top1_geometry_accuracy": 0.5619828743881131,
+      "geometry_threshold_px": 10.0,
+      "matched_gt_queries": 484771,
+      "unmatched_gt_queries": 0,
+      "matched_query_coverage": 1.0,
+      "matched_pair_precision_at_threshold": 0.5619828743881131,
+      "exact_grid_top1_accuracy": 0.517287544015628,
+      "exact_grid_top1_queries": 484771,
+      "coarse_position": {
+        "valid_gt_queries": 484771,
+        "position_error_queries": 484771,
+        "invalid_prediction_queries": 0,
+        "mean_error_px": 15.538565974881218,
+        "median_error_px": 9.056689262390137,
+        "mean_error_m": 3.1077132412847788,
+        "median_error_m": 1.8113378794690647
+      },
+      "top_matching_score": {
+        "top_score_mean": 0.7206304898956098,
+        "top_score_median": 0.7674759030342102,
+        "top_score_min": 0.04736598953604698,
+        "top_score_max": 0.9999980926513672
+      },
+      "equal_retention": {
+        "0.25": {
+          "retained_queries": 121193,
+          "retention_ratio": 0.2500005157074165,
+          "precision_at_retained": 0.8507009480745588,
+          "coverage_of_all_valid_gt": 0.21267567573142782,
+          "ranking_population_queries": 484771
+        },
+        "0.5": {
+          "retained_queries": 242386,
+          "retention_ratio": 0.500001031414833,
+          "precision_at_retained": 0.7544412631092555,
+          "coverage_of_all_valid_gt": 0.3772214096965371,
+          "ranking_population_queries": 484771
+        },
+        "0.75": {
+          "retained_queries": 363579,
+          "retention_ratio": 0.7500015471222494,
+          "precision_at_retained": 0.664411310884292,
+          "coverage_of_all_valid_gt": 0.4983095110887409,
+          "ranking_population_queries": 484771
+        }
+      },
+      "retention_population": "all valid GT queries",
+      "invalid_prediction_queries": 0,
+      "refined_position": {
+        "valid_gt_queries": 484771,
+        "position_error_queries": 484771,
+        "invalid_prediction_queries": 0,
+        "mean_error_px": 12.03769804585996,
+        "median_error_px": 4.669924259185791,
+        "mean_error_m": 2.407539645047128,
+        "median_error_m": 0.933984865754617
+      },
+      "depth_coarse": {
+        "valid_depth_queries": 478194,
+        "absrel": 0.1730583906173706,
+        "sqrel": 0.6260113716125488,
+        "rmse_m": 3.404787540435791,
+        "delta1": 0.7293943166732788
+      },
+      "depth_refine": {
+        "valid_depth_queries": 478249,
+        "absrel": 0.11173608899116516,
+        "sqrel": 0.47681665420532227,
+        "rmse_m": 2.9578473567962646,
+        "delta1": 0.8786720037460327
+      },
+      "confidence_weighted_depth": {
+        "coarse": {
+          "samples_evaluated": 397,
+          "valid_pixels_total": 10432843,
+          "valid_anchor_count_total": 833206,
+          "valid_anchor_count_mean": 2098.7556675062974,
+          "valid_anchor_count_min": 6,
+          "valid_anchor_count_max": 2112,
+          "scale_mean": 0.7119824813317592,
+          "scale_min": 0.09592799097299576,
+          "scale_max": 1.0000818967819214,
+          "absrel_mean_per_image": 0.10479316026704287,
+          "sqrel_mean_per_image": 0.6267367798450312,
+          "rmse_mean_per_image": 3.6173328811335623,
+          "delta1_mean_per_image": 0.9017588530459807,
+          "delta2_mean_per_image": 0.9592307956035364,
+          "delta3_mean_per_image": 0.9749306228659315
+        },
+        "refined": {
+          "samples_evaluated": 375,
+          "valid_pixels_total": 9828571,
+          "valid_anchor_count_total": 730049,
+          "valid_anchor_count_mean": 1946.7973333333334,
+          "valid_anchor_count_min": 223,
+          "valid_anchor_count_max": 2065,
+          "scale_mean": 0.7113606268813213,
+          "scale_min": 0.006331825628876686,
+          "scale_max": 1.5503884553909302,
+          "absrel_mean_per_image": 0.10441711400945981,
+          "sqrel_mean_per_image": 0.7209602248668671,
+          "rmse_mean_per_image": 3.731694477081299,
+          "delta1_mean_per_image": 0.894630702250967,
+          "delta2_mean_per_image": 0.9540498782695116,
+          "delta3_mean_per_image": 0.9700894401969078
+        }
+      }
+    },
+    "dual_softmax": {
+      "top1_geometry_accuracy": 0.4939816944495442,
+      "geometry_threshold_px": 10.0,
+      "matched_gt_queries": 484771,
+      "unmatched_gt_queries": 0,
+      "matched_query_coverage": 1.0,
+      "matched_pair_precision_at_threshold": 0.4939816944495442,
+      "exact_grid_top1_accuracy": 0.4522403361587224,
+      "exact_grid_top1_queries": 484771,
+      "coarse_position": {
+        "valid_gt_queries": 484771,
+        "position_error_queries": 484771,
+        "invalid_prediction_queries": 0,
+        "mean_error_px": 19.997897159970712,
+        "median_error_px": 10.111775398254395,
+        "mean_error_m": 3.99957949159252,
+        "median_error_m": 2.022355109786318
+      },
+      "top_matching_score": {
+        "top_score_mean": 0.013438331756682138,
+        "top_score_median": 0.0010054981103166938,
+        "top_score_min": 6.458116202150709e-22,
+        "top_score_max": 0.953357994556427
+      },
+      "equal_retention": {
+        "0.25": {
+          "retained_queries": 121193,
+          "retention_ratio": 0.2500005157074165,
+          "precision_at_retained": 0.5481834759433301,
+          "coverage_of_all_valid_gt": 0.13704615168811665,
+          "ranking_population_queries": 484771
+        },
+        "0.5": {
+          "retained_queries": 242386,
+          "retention_ratio": 0.500001031414833,
+          "precision_at_retained": 0.547362471429868,
+          "coverage_of_all_valid_gt": 0.27368180027270606,
+          "ranking_population_queries": 484771
+        },
+        "0.75": {
+          "retained_queries": 363579,
+          "retention_ratio": 0.7500015471222494,
+          "precision_at_retained": 0.5330120826560389,
+          "coverage_of_all_valid_gt": 0.39975988662688156,
+          "ranking_population_queries": 484771
+        }
+      },
+      "retention_population": "all valid GT queries",
+      "invalid_prediction_queries": 0,
+      "refined_position": {
+        "valid_gt_queries": 484771,
+        "position_error_queries": 484771,
+        "invalid_prediction_queries": 0,
+        "mean_error_px": 15.055515587912357,
+        "median_error_px": 5.74846076965332,
+        "mean_error_m": 3.011103162451404,
+        "median_error_m": 1.1496921710624122
+      },
+      "depth_coarse": {
+        "valid_depth_queries": 478143,
+        "absrel": 0.2705448865890503,
+        "sqrel": 2.6203699111938477,
+        "rmse_m": 5.127070903778076,
+        "delta1": 0.6670389175415039
+      },
+      "depth_refine": {
+        "valid_depth_queries": 478339,
+        "absrel": 0.17728160321712494,
+        "sqrel": 1.2709853649139404,
+        "rmse_m": 3.7726714611053467,
+        "delta1": 0.822251558303833
+      },
+      "confidence_weighted_depth": {
+        "coarse": {
+          "samples_evaluated": 397,
+          "valid_pixels_total": 10432843,
+          "valid_anchor_count_total": 829558,
+          "valid_anchor_count_mean": 2089.5667506297227,
+          "valid_anchor_count_min": 12,
+          "valid_anchor_count_max": 2112,
+          "scale_mean": 0.7235754486407981,
+          "scale_min": 0.082121841609478,
+          "scale_max": 1.1253244876861572,
+          "absrel_mean_per_image": 0.11354972177210923,
+          "sqrel_mean_per_image": 0.6433745091053791,
+          "rmse_mean_per_image": 3.6342021091759054,
+          "delta1_mean_per_image": 0.9014290479341432,
+          "delta2_mean_per_image": 0.9598844399450227,
+          "delta3_mean_per_image": 0.9762336970418363
+        },
+        "refined": {
+          "samples_evaluated": 375,
+          "valid_pixels_total": 9828571,
+          "valid_anchor_count_total": 727302,
+          "valid_anchor_count_mean": 1939.472,
+          "valid_anchor_count_min": 230,
+          "valid_anchor_count_max": 2054,
+          "scale_mean": 0.7337459531823795,
+          "scale_min": 0.0812271311879158,
+          "scale_max": 1.3393181562423706,
+          "absrel_mean_per_image": 0.10904875342051189,
+          "sqrel_mean_per_image": 0.6795224811236064,
+          "rmse_mean_per_image": 3.6488692642847695,
+          "delta1_mean_per_image": 0.9004811074833852,
+          "delta2_mean_per_image": 0.9558185965321027,
+          "delta3_mean_per_image": 0.9746869415591161
+        }
+      }
+    },
+    "mnn": {
+      "top1_geometry_accuracy": 0.010050106132586315,
+      "geometry_threshold_px": 10.0,
+      "matched_gt_queries": 10239,
+      "unmatched_gt_queries": 474532,
+      "matched_query_coverage": 0.021121312949825794,
+      "matched_pair_precision_at_threshold": 0.47582771755054204,
+      "exact_grid_top1_accuracy": 0.009237351244195714,
+      "exact_grid_top1_queries": 484771,
+      "coarse_position": {
+        "valid_gt_queries": 484771,
+        "position_error_queries": 10239,
+        "invalid_prediction_queries": 474532,
+        "mean_error_px": 16.50363534599592,
+        "median_error_px": 10.533703804016113,
+        "mean_error_m": 3.3007271183838505,
+        "median_error_m": 2.1067407921961063
+      },
+      "top_matching_score": {
+        "top_score_mean": 0.6927558776230968,
+        "top_score_median": 0.7308083772659302,
+        "top_score_min": 0.08079446107149124,
+        "top_score_max": 0.9999829530715942
+      },
+      "equal_retention": {
+        "0.25": {
+          "retained_queries": 2560,
+          "retention_ratio": 0.25002441644691864,
+          "precision_at_retained": 0.7703125,
+          "coverage_of_all_valid_gt": 0.004067900101284936,
+          "ranking_population_queries": 10239
+        },
+        "0.5": {
+          "retained_queries": 5120,
+          "retention_ratio": 0.5000488328938373,
+          "precision_at_retained": 0.664453125,
+          "coverage_of_all_valid_gt": 0.007017746523616306,
+          "ranking_population_queries": 10239
+        },
+        "0.75": {
+          "retained_queries": 7680,
+          "retention_ratio": 0.7500732493407559,
+          "precision_at_retained": 0.5721354166666667,
+          "coverage_of_all_valid_gt": 0.009064073552254569,
+          "ranking_population_queries": 10239
+        }
+      },
+      "retention_population": "accepted mutual MNN pairs; coverage is measured against all valid GT queries",
+      "invalid_prediction_queries": 474532,
+      "refined_position": {
+        "valid_gt_queries": 484771,
+        "position_error_queries": 10239,
+        "invalid_prediction_queries": 474532,
+        "mean_error_px": 292.9369025232736,
+        "median_error_px": 295.0908508300781,
+        "mean_error_m": 58.587381377674724,
+        "median_error_m": 59.01817104545489
+      },
+      "depth_coarse": {
+        "valid_depth_queries": 10185,
+        "absrel": 0.11461438983678818,
+        "sqrel": 0.432361900806427,
+        "rmse_m": 3.2014122009277344,
+        "delta1": 0.8836524486541748
+      },
+      "depth_refine": {
+        "valid_depth_queries": 7033,
+        "absrel": 2.2352874279022217,
+        "sqrel": 78.97065734863281,
+        "rmse_m": 29.451711654663086,
+        "delta1": 0.0907151997089386
+      },
+      "confidence_weighted_depth": {
+        "coarse": {
+          "samples_evaluated": 397,
+          "valid_pixels_total": 10432843,
+          "valid_anchor_count_total": 11330,
+          "valid_anchor_count_mean": 28.53904282115869,
+          "valid_anchor_count_min": 1,
+          "valid_anchor_count_max": 60,
+          "scale_mean": 0.7257764432907705,
+          "scale_min": 0.051718272268772125,
+          "scale_max": 1.0375601053237915,
+          "absrel_mean_per_image": 0.10784348080718247,
+          "sqrel_mean_per_image": 0.6314910968451266,
+          "rmse_mean_per_image": 3.5676687490429626,
+          "delta1_mean_per_image": 0.9036148667560717,
+          "delta2_mean_per_image": 0.962115859955324,
+          "delta3_mean_per_image": 0.9762678218428374
+        },
+        "refined": {
+          "samples_evaluated": 375,
+          "valid_pixels_total": 9828571,
+          "valid_anchor_count_total": 7976,
+          "valid_anchor_count_mean": 21.269333333333332,
+          "valid_anchor_count_min": 1,
+          "valid_anchor_count_max": 46,
+          "scale_mean": 1.7789296273738147,
+          "scale_min": 0.02332412265241146,
+          "scale_max": 5.293586254119873,
+          "absrel_mean_per_image": 1.6804588115115962,
+          "sqrel_mean_per_image": 52.85383318132162,
+          "rmse_mean_per_image": 25.648651215553283,
+          "delta1_mean_per_image": 0.11401392220768806,
+          "delta2_mean_per_image": 0.23672996620678655,
+          "delta3_mean_per_image": 0.32406224428880764
+        }
+      }
+    }
+  },
+  "elapsed_seconds": 2136.0266364390045
+}

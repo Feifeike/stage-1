@@ -1,0 +1,26 @@
+{
+  "matcher_tests_passed": [
+    "test_dual_softmax_is_batch_local_and_masks_invalid_tokens",
+    "test_all_invalid_match_has_no_nan_or_pseudo_match",
+    "test_dual_selection_is_inference_only_and_default_is_unchanged"
+  ],
+  "forward_refined_depth_parity_with_evaluate_confidence": "exact on first validation image; CPU FP32 batch=1",
+  "geometry_threshold_px": 10.0,
+  "dual_refined_depth_parity_with_evaluate_confidence": "all metrics within 1e-6 on first validation image; shared-logits candidate/refine path versus full dual-mode inference",
+  "full_evaluation_completed": true,
+  "samples_evaluated": 400,
+  "batches_processed": 50,
+  "valid_gt_queries": 484771,
+  "load_errors": 0,
+  "elapsed_seconds": 1524.450865480001,
+  "paired_depth_frames": {
+    "coarse": {
+      "paired_frames": 397,
+      "excluded_frames": 3
+    },
+    "refined": {
+      "paired_frames": 400,
+      "excluded_frames": 0
+    }
+  }
+}

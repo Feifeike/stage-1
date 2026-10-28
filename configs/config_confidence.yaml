@@ -1,0 +1,90 @@
+# Independent confidence-stage configuration. Supply manifests that contain
+# both `unidepth_depth_path` (or `depth_path`) and `lidar_depth_path`.
+data:
+  train_manifest: /mnt/mydisk/data/public_data/DC/KITTI-360/stage1_train_manifest.json
+  val_manifest: /mnt/mydisk/fkx/DC/models/stage1/outputs_0923/stage1_refine/kitti360_val400_manifest.json
+
+model:
+  descriptor_dim: 128
+  backbone_type: dinov3
+  backbone_name: dinov3_vits16
+  output_type: dense-cls
+  shared_backbone: true
+  per_view_adapter: true
+  freeze_backbone: true
+  dinov3_repo_path: /mnt/mydisk/toolNet/DINOv3/dinov3
+  dinov3_weights_path: /mnt/mydisk/toolNet/DINOv3/dino_encoder/weights/dinov3_vits16_pretrain_lvd1689m-08c60483.pth
+  conv_stride: 8
+
+geometry:
+  depth_type: camera_z
+  lidar_query_radius_px: 4
+  sanity_query_stride: 16
+
+matcher:
+  temperature: 0.07
+  num_layers: 2
+  num_heads: 4
+
+matching:
+  score_mode: forward_softmax
+
+refiner:
+  radius: 2
+  hidden_dim: null
+  max_offset_px: 16.0
+  scales: [16, 8, 4, 2, 1]
+  fine_feature_dim: 64
+  fine_pretrained: false
+  hidden_blocks: 8
+  depthwise: true
+  displacement_emb_dims:
+    16: 128
+    8: 64
+    4: 32
+    2: 16
+    1: 6
+  local_corr_radii:
+    16: 7
+    8: 3
+    4: 2
+    2: null
+    1: null
+
+# This is only used when the frozen Stage-1 model builds its target container;
+# confidence training never uses those targets to select anchors.
+loss:
+  lambda_coarse: 1.0
+  lambda_refine: 1.0
+  lambda_matchability: 0.1
+  lambda_certainty: 0.1
+  coarse_max_gt_grid_dist_px: 24.0
+
+confidence:
+  base_stage: refine
+  mono_depth_type: camera_z
+  max_anchor_depth_m: 80.0
+  # Fixed dense supervision set V, matching the existing depth evaluation.
+  lidar_min_depth_m: 1.0e-3
+  lidar_max_depth_m: 80.0
+  depth_epsilon: 1.0e-6
+
+training:
+  stage: confidence
+  output_dir: models/stage1/outputs/stage1_confidence
+  batch_size: 8
+  num_workers: 4
+  epochs: 100
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
+  amp: true
+  grad_clip_norm: 1.0
+  log_interval: 10
+  # TensorBoard-only EMA; raw per-batch values remain in metrics.jsonl.
+  tensorboard_loss_ema_alpha: 0.98
+  checkpoint_name: confidence_latest.pth
+  best_checkpoint_name: confidence_best.pth
+
+evaluation:
+  batch_size: 8
+  num_workers: 4
